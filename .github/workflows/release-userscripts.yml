@@ -1,0 +1,116 @@
+name: Release userscripts archive
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional release tag (example: v1.0.0)"
+        required: false
+        default: ""
+      create_tag:
+        description: "Create and push a generated tag if tag is empty (true/false)"
+        required: false
+        default: "true"
+      tag_prefix:
+        description: "Generated tag prefix"
+        required: false
+        default: "v"
+      release_name:
+        description: "Optional release name"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and push tag
+        id: tag
+        shell: bash
+        run: |
+          git fetch --tags
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            INPUT_TAG="${{ github.event.inputs.tag }}"
+            CREATE_TAG="${{ github.event.inputs.create_tag }}"
+            TAG_PREFIX="${{ github.event.inputs.tag_prefix }}"
+
+            if [[ -n "${INPUT_TAG}" ]]; then
+              TAG="${INPUT_TAG}"
+            elif [[ "${CREATE_TAG}" == "true" ]]; then
+              TAG="${TAG_PREFIX}$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+            else
+              echo "Either provide 'tag' or keep 'create_tag=true'."
+              exit 1
+            fi
+          else
+            TAG="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "${TAG}" "${GITHUB_SHA}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          NAME="${{ github.event.inputs.release_name }}"
+
+          if [[ -z "${NAME}" ]]; then
+            NAME="Userscripts ${TAG}"
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build archive
+        id: archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          ARCHIVE_NAME="userscripts-${{ steps.meta.outputs.tag }}.zip"
+          mapfile -t FILES < <(find . -type f \( -name "*.user.js" -o -name "*.js" \) \
+            -not -path "./.git/*" \
+            -not -path "./.github/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./dist/*" \
+            -print | sed 's#^\./##')
+
+          if [[ "${#FILES[@]}" -eq 0 ]]; then
+            echo "No userscript files (*.js / *.user.js) found."
+            exit 1
+          fi
+
+          printf '%s\n' "${FILES[@]}" > dist/included-files.txt
+          (cd . && zip -r "dist/${ARCHIVE_NAME}" "${FILES[@]}")
+
+          echo "archive=dist/${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          files: |
+            ${{ steps.archive.outputs.archive }}
+            dist/included-files.txt
+          generate_release_notes: true
