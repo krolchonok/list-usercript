@@ -82,13 +82,34 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Normalize userscript filenames
+        shell: bash
+        run: |
+          mapfile -t JS_FILES < <(find . -type f -name "*.js" \
+            -not -name "*.user.js" \
+            -not -path "./.git/*" \
+            -not -path "./.github/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./dist/*" \
+            -print | sed 's#^\./##')
+
+          for src in "${JS_FILES[@]}"; do
+            target="${src%.js}.user.js"
+            if [[ -f "${target}" ]]; then
+              continue
+            fi
+            cp "$src" "$target"
+            echo "Created ${target} from ${src}"
+          done
+
       - name: Build archive
         id: archive
         shell: bash
         run: |
           mkdir -p dist
+          mkdir -p dist/package
           ARCHIVE_NAME="userscripts.zip"
-          mapfile -t FILES < <(find . -type f \( -name "*.user.js" -o -name "*.js" \) \
+          mapfile -t FILES < <(find . -type f -name "*.user.js" \
             -not -path "./.git/*" \
             -not -path "./.github/*" \
             -not -path "./node_modules/*" \
@@ -96,12 +117,23 @@ jobs:
             -print | sed 's#^\./##')
 
           if [[ "${#FILES[@]}" -eq 0 ]]; then
-            echo "No userscript files (*.js / *.user.js) found."
+            echo "No userscript files (*.user.js) found."
             exit 1
           fi
 
-          printf '%s\n' "${FILES[@]}" > dist/included-files.txt
-          (cd . && zip -r "dist/${ARCHIVE_NAME}" "${FILES[@]}")
+          for f in "${FILES[@]}"; do
+            cp --parents "$f" dist/package/
+          done
+
+          (
+            cd dist/package
+            zip -r "../${ARCHIVE_NAME}" .
+          )
+
+          (
+            cd dist/package
+            find . -type f | sed 's#^\./##'
+          ) > dist/included-files.txt
 
           echo "archive=dist/${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
 
